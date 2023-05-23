@@ -1,5 +1,7 @@
 use {super::*, crate::wallet::Wallet};
 use std::str;
+use mongodb::bson::{Document, doc};
+use mongodb::{Client, options::ClientOptions, bson};
 
 #[derive(Serialize, Deserialize)]
 pub struct Output {
@@ -17,12 +19,35 @@ pub struct Brc20Deploy {
     pub lim: String,
 }
 
+impl Brc20Deploy {
+    fn to_document(&self) -> Document {
+        doc! {
+            "p": &self.p,
+            "op": &self.op,
+            "tick": &self.tick,
+            "max": &self.max,
+            "lim": &self.lim,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Brc20MintTransfer {
     pub p: String,
     pub op: String,
     pub tick: String,
     pub amt: String,
+}
+
+impl Brc20MintTransfer {
+    fn to_document(&self) -> Document {
+        doc! {
+            "p": &self.p,
+            "op": &self.op,
+            "tick": &self.tick,
+            "amt": &self.amt,
+        }
+    }
 }
 
 pub(crate) fn run(options: Options) -> Result {
@@ -41,6 +66,16 @@ pub(crate) fn run(options: Options) -> Result {
 
   let mut output = Vec::new();
 
+  let rt = Runtime::new().unwrap();
+  let future = async {
+    let connection_string = "mongodb://localhost:27017";
+    let db_name = "omnisat";
+    let client = MongoClient::new(connection_string, db_name).await.expect("Failed to initialize MongoDB client");
+    client
+  };
+
+  let client = rt.block_on(future);
+
   for (location, inscription) in inscriptions {
     let i = index.get_inscription_by_id(inscription).unwrap();
 
@@ -54,12 +89,24 @@ pub(crate) fn run(options: Options) -> Result {
                         match deploy {
                             Ok(deploy) => {
                                 println!("Deploy: {:?}", deploy);
+                                let document = deploy.to_document();
+                                let future = async {
+                                    client.insert_document("brcs", document).await.expect("Failed to enter into MongoDB");
+                                };
+                                rt.block_on(future);
+                                // client.insert_document("brcs", document);
                             }
                             Err(_) => {
                                 let mint_transfer : Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
                                 match mint_transfer {
                                     Ok(mint_transfer) => {
                                         println!("MintTransfer: {:?}", mint_transfer);
+                                        let document = mint_transfer.to_document();
+                                        let future = async {
+                                            client.insert_document("brcs", document).await.expect("Failed to enter into MongoDB");
+                                        };
+                                        rt.block_on(future);
+                                        // client.insert_document("brcs", document);
                                     }
                                     Err(_) => {
                                         // eprintln!("Failed to deserialize JSON: {}", &str::from_utf8(inc).unwrap());
@@ -81,9 +128,34 @@ pub(crate) fn run(options: Options) -> Result {
       });
   }
 
-
-
 //   print_json(&output)?;
 
   Ok(())
+}
+
+struct MongoClient {
+    client: Client,
+    db_name: String,
+}
+
+impl MongoClient {
+    async fn new(connection_string: &str, db_name: &str) -> Result<Self, mongodb::error::Error> {
+        let mut client_options = ClientOptions::parse(connection_string).await?;
+        client_options.direct_connection = Some(true);
+        let client = Client::with_options(client_options)?;
+
+        Ok(Self {
+            client,
+            db_name: db_name.to_string(),
+        })
+    }
+
+    async fn insert_document(&self, collection_name: &str, document: bson::Document) -> Result<(), mongodb::error::Error> {
+        let db = self.client.database(&self.db_name);
+        let collection = db.collection::<bson::Document>(collection_name);
+
+        collection.insert_one(document, None).await.expect("Could not insert document");
+
+        Ok(())
+    }
 }
