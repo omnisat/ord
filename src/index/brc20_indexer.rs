@@ -1,7 +1,8 @@
+use super::*;
+
 use mongodb::bson::{doc, Document};
 use mongodb::{bson, options::ClientOptions, Client};
 use std::str;
-use {super::*, crate::wallet::Wallet};
 
 #[derive(Serialize, Deserialize)]
 pub struct Output {
@@ -50,49 +51,71 @@ impl Brc20MintTransfer {
   }
 }
 
-pub(crate) fn run(options: Options) -> Result {
-  println!("{:#?}, options", options);
-  let index = Index::open(&options)?;
-  //   index.update()?;
-
-  let inscriptions = index.get_inscriptions(None)?;
-  let unspent_outputs = index.get_unspent_outputs(Wallet::load(&options)?)?;
-
-  let explorer = match options.chain() {
-    Chain::Mainnet => "https://ordinals.com/inscription/",
-    Chain::Regtest => "http://localhost/inscription/",
-    Chain::Signet => "https://signet.ordinals.com/inscription/",
-    Chain::Testnet => "https://testnet.ordinals.com/inscription/",
-  };
-
-  let mut output = Vec::new();
-
+/// Indexes BRC20 tokens into a MongoDB database.
+///
+/// This function takes an `Index` object as a parameter and performs the indexing process. It retrieves the inscriptions
+/// from the `Index` object and iterates over them. For each inscription, it retrieves the corresponding `Inscription`
+/// object and checks the content type. If the content type is either "application/json" or "text/plain;charset=utf-8",
+/// the body content is extracted and parsed as a string.
+///
+/// If the body content can be successfully parsed as a `Brc20Deploy` struct, it is inserted into the MongoDB collection
+/// named "brcs". Similarly, if it can be parsed as a `Brc20MintTransfer` struct, it is also inserted into the same
+/// collection.
+///
+/// # Arguments
+///
+/// * `index` - An `Index` object representing the BRC20 tokens to be indexed.
+///
+/// # Example
+///
+/// ```
+/// let index = Index::new();
+/// index_brc20(&index);
+/// ```
+pub(crate) async fn index_brc20(index: &Index) {
+  // Initialize the runtime for asynchronous operations.
   let rt = Runtime::new().unwrap();
+
+  // Create a future that establishes a connection to the MongoDB server.
   let future = async {
     let connection_string = "mongodb://localhost:27017";
     let db_name = "omnisat";
+
+    // Create a new MongoDB client with the provided connection string and database name.
     let client = MongoClient::new(connection_string, db_name)
       .await
       .expect("Failed to initialize MongoDB client");
-    client
+    client // Return the MongoDB client.
   };
 
+  // Establish a connection to the MongoDB server.
   let client = rt.block_on(future);
 
-  for (location, inscription) in inscriptions {
+  // Retrieve the inscriptions from the `Index` object.
+  let inscriptions = index.get_inscriptions(None).unwrap();
+
+  // Iterate over the inscriptions.
+  for (_location, inscription) in inscriptions {
+    // Retrieve the corresponding `Inscription` object.
     let i = index.get_inscription_by_id(inscription).unwrap();
 
     // TODO: clean/rustify
+
+    // Check the content type of the `Inscription`.
     if let Some(ct) = i.clone().unwrap().content_type() {
       if ct == "application/json" || ct == "text/plain;charset=utf-8" {
+        // Extract the body content of the `Inscription`.
         if let Some(inc) = i.clone().unwrap().body() {
           match str::from_utf8(inc) {
             Ok(parse_inc) => {
+              // Attempt to parse the body content as a `Brc20Deploy` struct.
               let deploy: Result<Brc20Deploy, _> = serde_json::from_str(parse_inc);
               match deploy {
                 Ok(deploy) => {
+                  // Body content successfully parsed as `Brc20Deploy`. Insert into the MongoDB collection.
                   println!("Deploy: {:?}", deploy);
                   let document = deploy.to_document();
+                  // insert_document_into_brcs_collection(&client, document).await;
                   let future = async {
                     client
                       .insert_document("brcs", document)
@@ -103,11 +126,14 @@ pub(crate) fn run(options: Options) -> Result {
                   // client.insert_document("brcs", document);
                 }
                 Err(_) => {
+                  // Attempt to parse the body content as a `Brc20MintTransfer` struct.
                   let mint_transfer: Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
                   match mint_transfer {
                     Ok(mint_transfer) => {
+                      // Body content successfully parsed as `Brc20MintTransfer`. Insert into the MongoDB collection.
                       println!("MintTransfer: {:?}", mint_transfer);
                       let document = mint_transfer.to_document();
+                      // insert_document_into_brcs_collection(&client, document).await;
                       let future = async {
                         client
                           .insert_document("brcs", document)
@@ -119,6 +145,7 @@ pub(crate) fn run(options: Options) -> Result {
                     }
                     Err(_) => {
                       // eprintln!("Failed to deserialize JSON: {}", &str::from_utf8(inc).unwrap());
+                      // Body content failed to parse as either `Brc20Deploy` or `Brc20MintTransfer`.
                     }
                   }
                 }
@@ -129,83 +156,15 @@ pub(crate) fn run(options: Options) -> Result {
         }
       }
     }
-
-    output.push(Output {
-      location,
-      inscription,
-      explorer: format!("{explorer}{inscription}"),
-    });
   }
-
-  //   print_json(&output)?;
-
-  Ok(())
 }
 
-pub(crate) fn index_brc20(index: &Index) {
-  let rt = Runtime::new().unwrap();
-  let future = async {
-    let connection_string = "mongodb://localhost:27017";
-    let db_name = "omnisat";
-    let client = MongoClient::new(connection_string, db_name)
-      .await
-      .expect("Failed to initialize MongoDB client");
-    client
-  };
-
-  let client = rt.block_on(future);
-  let inscriptions = index.get_inscriptions(None).unwrap();
-  for (_location, inscription) in inscriptions {
-    let i = index.get_inscription_by_id(inscription).unwrap();
-
-    // TODO: clean/rustify
-    if let Some(ct) = i.clone().unwrap().content_type() {
-      if ct == "application/json" || ct == "text/plain;charset=utf-8" {
-        if let Some(inc) = i.clone().unwrap().body() {
-          match str::from_utf8(inc) {
-            Ok(parse_inc) => {
-              let deploy: Result<Brc20Deploy, _> = serde_json::from_str(parse_inc);
-              match deploy {
-                Ok(deploy) => {
-                  println!("Deploy: {:?}", deploy);
-                  let document = deploy.to_document();
-                  let future = async {
-                    client
-                      .insert_document("brcs", document)
-                      .await
-                      .expect("Failed to enter into MongoDB");
-                  };
-                  rt.block_on(future);
-                  // client.insert_document("brcs", document);
-                }
-                Err(_) => {
-                  let mint_transfer: Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
-                  match mint_transfer {
-                    Ok(mint_transfer) => {
-                      println!("MintTransfer: {:?}", mint_transfer);
-                      let document = mint_transfer.to_document();
-                      let future = async {
-                        client
-                          .insert_document("brcs", document)
-                          .await
-                          .expect("Failed to enter into MongoDB");
-                      };
-                      rt.block_on(future);
-                      // client.insert_document("brcs", document);
-                    }
-                    Err(_) => {
-                      // eprintln!("Failed to deserialize JSON: {}", &str::from_utf8(inc).unwrap());
-                    }
-                  }
-                }
-              }
-            }
-            Err(_) => {}
-          };
-        }
-      }
-    }
-  }
+async fn insert_document_into_brcs_collection(client: &MongoClient, document: bson::Document) {
+  println!("INSERT");
+  client
+    .insert_document("brcs", document)
+    .await
+    .expect("Failed to enter into MongoDB");
 }
 
 struct MongoClient {

@@ -1,3 +1,6 @@
+// use super::brc20_indexer::index_brc20;
+use crate::subcommand::wallet::inscriptions_all::index_brc20;
+
 use {
   self::inscription_updater::InscriptionUpdater,
   super::{fetcher::Fetcher, *},
@@ -5,7 +8,6 @@ use {
   std::sync::mpsc,
   tokio::sync::mpsc::{error::TryRecvError, Receiver, Sender},
 };
-
 mod inscription_updater;
 
 struct BlockData {
@@ -41,6 +43,10 @@ pub(crate) struct Updater {
 
 impl Updater {
   pub(crate) fn update(index: &Index) -> Result {
+    // placing our indexer at the beginning
+    print!("Entering......");
+    index_brc20(index);
+    print!("Exiting......");
     let wtx = index.begin_write()?;
 
     let height = wtx
@@ -524,6 +530,8 @@ impl Updater {
     } else {
       for (tx, txid) in block.txdata.iter().skip(1).chain(block.txdata.first()) {
         lost_sats += inscription_updater.index_transaction_inscriptions(tx, *txid, None)?;
+        println!("Processed transaction: fn index_block ----->>>>1");
+        println!("Processed transaction: {:?}", txid);
       }
     }
 
@@ -562,6 +570,8 @@ impl Updater {
         vout: vout.try_into().unwrap(),
         txid,
       };
+      println!("Processing output outpoint for transaction: <---->");
+      // println!("Processing output for transaction: {:?}", outpoint);
       let mut sats = Vec::new();
 
       let mut remaining = output.value;

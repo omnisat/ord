@@ -143,7 +143,7 @@ fn timestamp(seconds: u32) -> DateTime<Utc> {
 
 pub fn main() {
   env_logger::init();
-
+  println!(" MAIN");
   ctrlc::set_handler(move || {
     LISTENERS
       .lock()

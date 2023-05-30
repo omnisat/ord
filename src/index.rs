@@ -18,6 +18,7 @@ use {
   std::sync::atomic::{self, AtomicBool},
 };
 
+mod brc20_indexer;
 mod entry;
 mod fetcher;
 mod rtx;
