@@ -1,5 +1,4 @@
 use super::*;
-
 use mongodb::bson::{doc, Document};
 use mongodb::{bson, options::ClientOptions, Client};
 use std::str;
@@ -20,7 +19,19 @@ pub struct Brc20Deploy {
   pub lim: String,
 }
 
-impl Brc20Deploy {
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Brc20MintTransfer {
+  pub p: String,
+  pub op: String,
+  pub tick: String,
+  pub amt: String,
+}
+
+trait ToDocument {
+  fn to_document(&self) -> Document;
+}
+
+impl ToDocument for Brc20Deploy {
   fn to_document(&self) -> Document {
     doc! {
         "p": &self.p,
@@ -32,15 +43,7 @@ impl Brc20Deploy {
   }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Brc20MintTransfer {
-  pub p: String,
-  pub op: String,
-  pub tick: String,
-  pub amt: String,
-}
-
-impl Brc20MintTransfer {
+impl ToDocument for Brc20MintTransfer {
   fn to_document(&self) -> Document {
     doc! {
         "p": &self.p,
@@ -51,120 +54,119 @@ impl Brc20MintTransfer {
   }
 }
 
-/// Indexes BRC20 tokens into a MongoDB database.
-///
-/// This function takes an `Index` object as a parameter and performs the indexing process. It retrieves the inscriptions
-/// from the `Index` object and iterates over them. For each inscription, it retrieves the corresponding `Inscription`
-/// object and checks the content type. If the content type is either "application/json" or "text/plain;charset=utf-8",
-/// the body content is extracted and parsed as a string.
-///
-/// If the body content can be successfully parsed as a `Brc20Deploy` struct, it is inserted into the MongoDB collection
-/// named "brcs". Similarly, if it can be parsed as a `Brc20MintTransfer` struct, it is also inserted into the same
-/// collection.
+/// The `index_brc20` function is responsible for indexing BRC20 tokens into a MongoDB database.
 ///
 /// # Arguments
 ///
 /// * `index` - An `Index` object representing the BRC20 tokens to be indexed.
 ///
-/// # Example
+/// # Returns
 ///
-/// ```
-/// let index = Index::new();
-/// index_brc20(&index);
-/// ```
-pub(crate) async fn index_brc20(index: &Index) {
+/// This function returns a `Result` which is an enumeration representing either success (`Ok`) or failure (`Err`).
+///
+/// # Errors
+///
+/// This function will return an error if any of the following occur:
+/// * The runtime for asynchronous operations cannot be created.
+/// * The MongoDB client cannot be created.
+/// * The inscriptions cannot be retrieved from the `Index` object.
+/// * The `Inscription` object cannot be retrieved for a given inscription.
+/// * The body content of the `Inscription` cannot be parsed as a string.
+/// * The body content cannot be parsed as a `Brc20Deploy` or `Brc20MintTransfer` struct.
+/// * The document cannot be inserted into the MongoDB collection.
+pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error>> {
   // Initialize the runtime for asynchronous operations.
-  let rt = Runtime::new().unwrap();
+  let rt = Runtime::new()?;
 
   // Create a future that establishes a connection to the MongoDB server.
   let future = async {
     let connection_string = "mongodb://localhost:27017";
     let db_name = "omnisat";
-
-    // Create a new MongoDB client with the provided connection string and database name.
-    let client = MongoClient::new(connection_string, db_name)
-      .await
-      .expect("Failed to initialize MongoDB client");
-    client // Return the MongoDB client.
+    MongoClient::new(connection_string, db_name).await
   };
 
   // Establish a connection to the MongoDB server.
-  let client = rt.block_on(future);
+  let client = rt.block_on(future)?;
 
   // Retrieve the inscriptions from the `Index` object.
-  let inscriptions = index.get_inscriptions(None).unwrap();
+  let inscriptions = index.get_inscriptions(None)?;
 
   // Iterate over the inscriptions.
   for (_location, inscription) in inscriptions {
     // Retrieve the corresponding `Inscription` object.
-    let i = index.get_inscription_by_id(inscription).unwrap();
+    let i = index.get_inscription_by_id(inscription)?;
 
-    // TODO: clean/rustify
+    // Check if the `Inscription` object exists.
+    if let Some(inscription) = i {
+      // Check the content type of the `Inscription`.
+      if let Some(ct) = inscription.content_type() {
+        // Check if the content type is either JSON or plain text.
+        if ct == "application/json" || ct == "text/plain;charset=utf-8" {
+          // Parse the body content of the `Inscription` as a string.
+          if let Some(inc) = inscription.body() {
+            let parse_inc = str::from_utf8(inc)?;
 
-    // Check the content type of the `Inscription`.
-    if let Some(ct) = i.clone().unwrap().content_type() {
-      if ct == "application/json" || ct == "text/plain;charset=utf-8" {
-        // Extract the body content of the `Inscription`.
-        if let Some(inc) = i.clone().unwrap().body() {
-          match str::from_utf8(inc) {
-            Ok(parse_inc) => {
-              // Attempt to parse the body content as a `Brc20Deploy` struct.
-              let deploy: Result<Brc20Deploy, _> = serde_json::from_str(parse_inc);
-              match deploy {
-                Ok(deploy) => {
-                  // Body content successfully parsed as `Brc20Deploy`. Insert into the MongoDB collection.
-                  println!("Deploy: {:?}", deploy);
-                  let document = deploy.to_document();
-                  // insert_document_into_brcs_collection(&client, document).await;
-                  let future = async {
-                    client
-                      .insert_document("brcs", document)
-                      .await
-                      .expect("Failed to enter into MongoDB");
-                  };
-                  rt.block_on(future);
-                  // client.insert_document("brcs", document);
-                }
-                Err(_) => {
-                  // Attempt to parse the body content as a `Brc20MintTransfer` struct.
-                  let mint_transfer: Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
-                  match mint_transfer {
-                    Ok(mint_transfer) => {
-                      // Body content successfully parsed as `Brc20MintTransfer`. Insert into the MongoDB collection.
-                      println!("MintTransfer: {:?}", mint_transfer);
-                      let document = mint_transfer.to_document();
-                      // insert_document_into_brcs_collection(&client, document).await;
-                      let future = async {
-                        client
-                          .insert_document("brcs", document)
-                          .await
-                          .expect("Failed to enter into MongoDB");
-                      };
-                      rt.block_on(future);
-                      // client.insert_document("brcs", document);
-                    }
-                    Err(_) => {
-                      // eprintln!("Failed to deserialize JSON: {}", &str::from_utf8(inc).unwrap());
-                      // Body content failed to parse as either `Brc20Deploy` or `Brc20MintTransfer`.
-                    }
-                  }
-                }
+            // Parse the body content as a `Brc20Deploy` struct.
+            let deploy: Result<Brc20Deploy, _> = serde_json::from_str(parse_inc);
+            if let Ok(deploy) = deploy {
+              println!("Deploy: {:?}", deploy);
+              // Insert the `Brc20Deploy` struct into the MongoDB collection.
+              let future = insert_document_into_brcs_collection(&client, deploy);
+              rt.block_on(future)?;
+            } else {
+              // Parse the body content as a `Brc20MintTransfer` struct.
+              let mint_transfer: Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
+              if let Ok(mint_transfer) = mint_transfer {
+                println!("MintTransfer: {:?}", mint_transfer);
+                // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
+                let future = insert_document_into_brcs_collection(&client, mint_transfer);
+                rt.block_on(future)?;
               }
             }
-            Err(_) => {}
-          };
+          }
         }
       }
     }
   }
+
+  Ok(())
 }
 
-async fn insert_document_into_brcs_collection(client: &MongoClient, document: bson::Document) {
+/// The `insert_document_into_brcs_collection` function is responsible for inserting a document into the "brcs" collection in MongoDB.
+///
+/// # Arguments
+///
+/// * `client` - A `MongoClient` object representing the MongoDB client.
+/// * `item` - An item that implements the `ToDocument` trait, which will be converted into a MongoDB document and inserted into the collection.
+///
+/// # Returns
+///
+/// This function returns a `Result` which is an enumeration representing either success (`Ok`) or failure (`Err`).
+///
+/// # Errors
+///
+/// This function will return an error if the document cannot be inserted into the MongoDB collection.
+///
+/// # Example
+///
+/// ```
+/// let client = MongoClient::new("mongodb://localhost:27017", "omnisat").await?;
+/// let deploy = Brc20Deploy { p: "p", op: "op", tick: "tick", max: "max", lim: "lim" };
+/// insert_document_into_brcs_collection(&client, deploy).await?;
+/// ```
+async fn insert_document_into_brcs_collection<T: ToDocument>(
+  client: &MongoClient,
+  item: T,
+) -> Result<(), Box<dyn std::error::Error>> {
   println!("INSERT");
-  client
-    .insert_document("brcs", document)
-    .await
-    .expect("Failed to enter into MongoDB");
+  // Convert the item into a MongoDB document.
+  let document = item.to_document();
+
+  // Insert the document into the "brcs" collection.
+  client.insert_document("brcs", document).await?;
+
+  // Return success.
+  Ok(())
 }
 
 struct MongoClient {
