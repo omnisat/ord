@@ -18,6 +18,7 @@ pub(crate) fn run(options: Options) -> Result {
   let mut balance = 0;
   for (outpoint, amount) in index.get_unspent_outputs(Wallet::load(&options)?)? {
     if !inscription_outputs.contains(&outpoint) {
+      println!("amount: {:?}", amount);
       balance += amount.to_sat()
     }
   }

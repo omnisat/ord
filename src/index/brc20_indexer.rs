@@ -92,7 +92,7 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
   let inscriptions = index.get_inscriptions(None)?;
 
   // Iterate over the inscriptions.
-  for (_location, inscription) in inscriptions {
+  for (location, inscription) in inscriptions {
     // Retrieve the corresponding `Inscription` object.
     let i = index.get_inscription_by_id(inscription)?;
 
@@ -109,7 +109,12 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
             // Parse the body content as a `Brc20Deploy` struct.
             let deploy: Result<Brc20Deploy, _> = serde_json::from_str(parse_inc);
             if let Ok(deploy) = deploy {
+              println!("----------------");
               println!("Deploy: {:?}", deploy);
+
+              // Handle the transaction information.
+              handle_transaction(index, &location.outpoint)?;
+
               // Insert the `Brc20Deploy` struct into the MongoDB collection.
               let future = insert_document_into_brcs_collection(&client, deploy);
               rt.block_on(future)?;
@@ -117,7 +122,13 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
               // Parse the body content as a `Brc20MintTransfer` struct.
               let mint_transfer: Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
               if let Ok(mint_transfer) = mint_transfer {
+                println!("----------------");
                 println!("MintTransfer: {:?}", mint_transfer);
+
+                // Handle the transaction information.
+                handle_transaction(index, &location.outpoint)?;
+
+                println!("----------------");
                 // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
                 let future = insert_document_into_brcs_collection(&client, mint_transfer);
                 rt.block_on(future)?;
@@ -130,6 +141,96 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
   }
 
   Ok(())
+}
+
+pub(crate) fn handle_transaction(
+  index: &Index,
+  outpoint: &OutPoint,
+) -> Result<(), Box<dyn std::error::Error>> {
+  let tx = get_transaction_from_outpoint(index, outpoint)?;
+  println!("Transaction id: {:?}", tx.txid());
+
+  // Get the addresses of the outputs.
+  let output_addresses = transaction_outputs_to_addresses(&tx)?;
+  for (index, address) in output_addresses.iter().enumerate() {
+    println!("Output Address {}: {}", index + 1, address);
+  }
+
+  // Get the addresses of the inputs.
+  let input_addresses = transaction_inputs_to_addresses(index, &tx)?;
+  for (index, address) in input_addresses.iter().enumerate() {
+    println!("Input Address {}: {}", index + 1, address);
+  }
+
+  Ok(())
+}
+
+fn get_transaction_from_outpoint(
+  index: &Index,
+  outpoint: &OutPoint,
+) -> Result<Transaction, Box<dyn std::error::Error>> {
+  // Get the raw transaction that the outpoint refers to
+  let tx = index.client.get_raw_transaction(&outpoint.txid, None)?;
+  Ok(tx)
+}
+
+fn transaction_outputs_to_addresses(
+  tx: &Transaction,
+) -> Result<Vec<Address>, Box<dyn std::error::Error>> {
+  let mut addresses: Vec<Address> = vec![];
+
+  for output in &tx.output {
+    let script_pub_key = &output.script_pubkey;
+
+    if let Ok(address) = Address::from_script(&script_pub_key, Network::Testnet) {
+      // println!("script_pub_key: {:?}", script_pub_key);
+      addresses.push(address);
+    } else {
+      println!("Couldn't derive address from scriptPubKey");
+    }
+  }
+
+  if addresses.is_empty() {
+    Err("Couldn't derive any addresses from scriptPubKeys".into())
+  } else {
+    Ok(addresses)
+  }
+}
+
+fn transaction_inputs_to_addresses(
+  index: &Index,
+  tx: &Transaction,
+) -> Result<Vec<Address>, Box<dyn std::error::Error>> {
+  // To get the address of the input, we need to look up the transaction by `prev_output.txid`,
+  // then get the `prev_output.vout`th output of that transaction, then extract the address from
+  // the `script_pubkey` of that output.
+  let mut addresses: Vec<Address> = vec![];
+  for input in &tx.input {
+    let prev_output = input.previous_output;
+    println!(
+      "Input from transaction: {:?}, index: {:?}",
+      prev_output.txid, prev_output.vout
+    );
+
+    let script_pub_key = &index
+      .client
+      .get_raw_transaction(&prev_output.txid, None)?
+      .output[usize::try_from(prev_output.vout).unwrap()]
+    .script_pubkey;
+
+    if let Ok(address) = Address::from_script(&script_pub_key, Network::Testnet) {
+      // println!("script_pub_key: {:?}", script_pub_key);
+      addresses.push(address);
+    } else {
+      println!("Couldn't derive address from scriptPubKey");
+    }
+  }
+
+  if addresses.is_empty() {
+    Err("Couldn't derive any addresses from scriptPubKeys".into())
+  } else {
+    Ok(addresses)
+  }
 }
 
 /// The `insert_document_into_brcs_collection` function is responsible for inserting a document into the "brcs" collection in MongoDB.
@@ -146,19 +247,10 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
 /// # Errors
 ///
 /// This function will return an error if the document cannot be inserted into the MongoDB collection.
-///
-/// # Example
-///
-/// ```
-/// let client = MongoClient::new("mongodb://localhost:27017", "omnisat").await?;
-/// let deploy = Brc20Deploy { p: "p", op: "op", tick: "tick", max: "max", lim: "lim" };
-/// insert_document_into_brcs_collection(&client, deploy).await?;
-/// ```
 async fn insert_document_into_brcs_collection<T: ToDocument>(
   client: &MongoClient,
   item: T,
 ) -> Result<(), Box<dyn std::error::Error>> {
-  println!("INSERT");
   // Convert the item into a MongoDB document.
   let document = item.to_document();
 
