@@ -60,7 +60,8 @@ pub struct Brc20Ticker {
   deploy: Brc20Deploy,
   mints: Vec<Brc20MintTransfer>,
   transfers: Vec<Brc20MintTransfer>,
-  total_minted: u64, // New field: TotalMinted
+  total_minted: u64,              // New field: TotalMinted
+  balances: HashMap<String, u64>, // New field: Balances
 }
 
 impl Brc20Ticker {
@@ -70,13 +71,15 @@ impl Brc20Ticker {
       mints: Vec::new(),
       transfers: Vec::new(),
       total_minted: 0,
+      balances: HashMap::new(),
     }
   }
 
-  pub fn add_mint(&mut self, mint: Brc20MintTransfer) {
+  pub fn add_mint(&mut self, mint: Brc20MintTransfer, owner: Address) {
     self.mints.push(mint.clone());
     let minted_amount: u64 = mint.amt.parse().unwrap_or(0);
     self.total_minted += minted_amount;
+    self.update_balance(owner.to_string(), minted_amount);
   }
 
   pub fn add_transfer(&mut self, transfer: Brc20MintTransfer) {
@@ -89,6 +92,18 @@ impl Brc20Ticker {
     let max: u64 = self.deploy.max.parse().unwrap_or(0);
 
     self.total_minted + minted_amount <= max && minted_amount <= limit
+  }
+
+  pub fn update_balance(&mut self, address: String, amount: u64) {
+    if let Some(balance) = self.balances.get_mut(&address) {
+      *balance += amount;
+    } else {
+      self.balances.insert(address, amount);
+    }
+  }
+
+  pub fn get_balance(&self, address: &str) -> Option<u64> {
+    self.balances.get(address).cloned()
   }
 
   pub fn is_transfer_valid(&self, transfer: &Brc20MintTransfer) -> bool {
@@ -181,8 +196,9 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
                   // Check if the mint is valid.
                   if let Some(ticker) = ticker_map.get_mut(&mint_transfer.tick) {
                     if ticker.is_mint_valid(&mint_transfer) {
-                      // Handle the transaction information.
-                      handle_transaction(index, &location.outpoint)?;
+                      // Handle the transaction information and retrieve owner address.
+                      let owner = handle_transaction(index, &location.outpoint)?;
+                      println!("owner: {:?}", owner);
 
                       // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
                       let future =
@@ -190,7 +206,7 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
                       rt.block_on(future)?;
 
                       // Update the ticker struct with the mint operation.
-                      ticker.add_mint(mint_transfer.clone());
+                      ticker.add_mint(mint_transfer.clone(), owner);
                     } else {
                       println!("Invalid mint operation. Skipping...");
                     }
@@ -226,7 +242,7 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
 pub(crate) fn handle_transaction(
   index: &Index,
   outpoint: &OutPoint,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Address, Box<dyn std::error::Error>> {
   // Get the raw transaction info.
   let raw_tx_info = index
     .client
@@ -240,6 +256,16 @@ pub(crate) fn handle_transaction(
 
   // Get the transaction Outputs
   let outputs = &raw_tx_info.transaction()?.output;
+
+  // Get the address of this output
+  let script_pubkey = &raw_tx_info.vout[outpoint.vout as usize].script_pub_key;
+  let this_address = Address::from_script(&script_pubkey.script().unwrap(), Network::Testnet)
+    .map_err(|_| {
+      println!("Couldn't derive address from scriptPubKey");
+      "Couldn't derive address from scriptPubKey"
+    })?;
+
+  println!("This Address: {}", this_address);
 
   // Get the addresses and values of the inputs.
   let input_addresses_values = transaction_inputs_to_addresses_values(index, inputs)?;
@@ -259,7 +285,7 @@ pub(crate) fn handle_transaction(
     );
   }
 
-  Ok(())
+  Ok(this_address)
 }
 
 fn transaction_inputs_to_addresses_values(
