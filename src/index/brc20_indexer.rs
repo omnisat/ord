@@ -60,8 +60,8 @@ pub struct Brc20Ticker {
   deploy: Brc20Deploy,
   mints: Vec<Brc20MintTransfer>,
   transfers: Vec<Brc20MintTransfer>,
-  total_minted: u64,              // New field: TotalMinted
-  balances: HashMap<String, u64>, // New field: Balances
+  total_minted: u64,               // New field: TotalMinted
+  balances: HashMap<Address, u64>, // New field: Balances
 }
 
 impl Brc20Ticker {
@@ -76,14 +76,27 @@ impl Brc20Ticker {
   }
 
   pub fn add_mint(&mut self, mint: Brc20MintTransfer, owner: Address) {
-    self.mints.push(mint.clone());
     let minted_amount: u64 = mint.amt.parse().unwrap_or(0);
     self.total_minted += minted_amount;
-    self.update_balance(owner.to_string(), minted_amount);
+    self.update_balance(owner, minted_amount);
+    self.mints.push(mint);
   }
 
-  pub fn add_transfer(&mut self, transfer: Brc20MintTransfer) {
+  pub fn add_transfer(&mut self, transfer: Brc20MintTransfer, owner: Address) {
+    let transfer_amount = transfer.amt.parse::<u64>().unwrap_or(0);
+    self.update_balance(owner, transfer_amount);
     self.transfers.push(transfer);
+  }
+
+  pub fn is_transfer_valid(&self, transfer: &Brc20MintTransfer) -> bool {
+    // Check if the sender has enough balance for the transfer.
+    // let sender_balance = self.balances.get(&transfer.from);
+    let transfer_amount = transfer.amt.parse::<u64>().unwrap_or(0);
+    // match sender_balance {
+    //   Some(balance) => *balance >= transfer_amount,
+    //   None => false,
+    // }
+    true
   }
 
   pub fn is_mint_valid(&self, mint: &Brc20MintTransfer) -> bool {
@@ -94,7 +107,7 @@ impl Brc20Ticker {
     self.total_minted + minted_amount <= max && minted_amount <= limit
   }
 
-  pub fn update_balance(&mut self, address: String, amount: u64) {
+  pub fn update_balance(&mut self, address: Address, amount: u64) {
     if let Some(balance) = self.balances.get_mut(&address) {
       *balance += amount;
     } else {
@@ -102,13 +115,8 @@ impl Brc20Ticker {
     }
   }
 
-  pub fn get_balance(&self, address: &str) -> Option<u64> {
+  pub fn get_balance(&self, address: &Address) -> Option<u64> {
     self.balances.get(address).cloned()
-  }
-
-  pub fn is_transfer_valid(&self, transfer: &Brc20MintTransfer) -> bool {
-    // TODO: Implement transfer validation logic here.
-    true
   }
 }
 
@@ -164,70 +172,86 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
             // Parse the body content as a `Brc20Deploy` struct.
             let deploy: Result<Brc20Deploy, _> = serde_json::from_str(parse_inc);
             if let Ok(deploy) = deploy {
-              println!("=========================");
-              println!("Deploy: {:?}", deploy);
-              println!("=========================");
+              if deploy.op == "deploy" {
+                println!("=========================");
+                println!("Deploy: {:?}", deploy);
+                println!("=========================");
 
-              // Check if the ticker already exists in the hashmap.
-              if let Some(ticker) = ticker_map.get(&deploy.tick.to_lowercase()) {
-                println!("Duplicate deploy. Skipping...{:#?}", ticker);
-                continue;
+                // Check if the ticker already exists in the hashmap.
+                if ticker_map.contains_key(&deploy.tick.to_lowercase()) {
+                  println!("Duplicate deploy. Skipping...");
+                  continue;
+                }
+
+                // Handle the transaction information.
+                // handle_transaction(index, &location.outpoint)?;
+
+                // Insert the `Brc20Deploy` struct into the MongoDB collection.
+                let future = insert_document_into_brcs_collection(&client, deploy.clone());
+                rt.block_on(future)?;
+
+                // Instantiate a new `Brc20Ticker` struct and update the hashmap with the deploy information.
+                let ticker = Brc20Ticker::new(deploy.clone());
+                ticker_map.insert(deploy.tick.clone(), ticker);
               }
-
-              // Handle the transaction information.
-              handle_transaction(index, &location.outpoint)?;
-
-              // Insert the `Brc20Deploy` struct into the MongoDB collection.
-              let future = insert_document_into_brcs_collection(&client, deploy.clone());
-              rt.block_on(future)?;
-
-              // Instantiate a new `Brc20Ticker` struct and update the hashmap with the deploy information.
-              let ticker = Brc20Ticker::new(deploy.clone());
-              ticker_map.insert(deploy.tick.clone(), ticker);
             } else {
               // Parse the body content as a `Brc20MintTransfer` struct.
               let mint_transfer: Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
               if let Ok(mint_transfer) = mint_transfer {
-                if mint_transfer.op == "mint" {
-                  println!("=========================");
-                  println!("Mint: {:?}", mint_transfer);
-                  println!("=========================");
+                // Check if the ticker struct exists for the ticker.
+                if let Some(ticker) = ticker_map.get_mut(&mint_transfer.tick) {
+                  if mint_transfer.op == "mint" {
+                    println!("=========================");
+                    println!("Mint: {:?}", mint_transfer);
+                    println!("-------------------------");
 
-                  // Check if the mint is valid.
-                  if let Some(ticker) = ticker_map.get_mut(&mint_transfer.tick) {
                     if ticker.is_mint_valid(&mint_transfer) {
                       // Handle the transaction information and retrieve owner address.
-                      let owner = handle_transaction(index, &location.outpoint)?;
-                      println!("owner: {:?}", owner);
+                      let owner = get_owner(index, &location.outpoint)?;
+                      // handle_transaction(index, &location.outpoint)?;
+                      println!("To Address: {:?}", owner);
+
+                      // Update the ticker struct with the mint operation.
+                      ticker.add_mint(mint_transfer.clone(), owner);
 
                       // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
                       let future =
                         insert_document_into_brcs_collection(&client, mint_transfer.clone());
                       rt.block_on(future)?;
-
-                      // Update the ticker struct with the mint operation.
-                      ticker.add_mint(mint_transfer.clone(), owner);
                     } else {
                       println!("Invalid mint operation. Skipping...");
                     }
-                  } else {
-                    println!("Ticker not found. Skipping mint operation...");
+                  } else if mint_transfer.op == "transfer" {
+                    println!("=========================");
+                    println!("Transfer: {:?}", mint_transfer);
+                    println!("=========================");
+                    handle_transaction(index, &location.outpoint)?;
+
+                    // Check if the transfer is valid.
+                    if ticker.is_transfer_valid(&mint_transfer) {
+                      // Handle the transaction information and retrieve owner address.
+                      let owner = get_owner(index, &location.outpoint)?;
+                      println!("To Address: {:?}", owner);
+
+                      // Update the ticker struct with the transfer operation.
+                      ticker.add_transfer(mint_transfer.clone(), owner);
+
+                      // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
+                      let future =
+                        insert_document_into_brcs_collection(&client, mint_transfer.clone());
+                      rt.block_on(future)?;
+                    } else {
+                      println!("Invalid transfer operation. Skipping...");
+                    }
+
+                    // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
+                    let future = insert_document_into_brcs_collection(&client, mint_transfer);
+                    rt.block_on(future)?;
+                    println!("----------------");
                   }
-                  println!("----------------");
+                } else {
+                  // println!("Ticker not found. Skipping mint operation...");
                 }
-
-                // CURRENTLY SUPPRESSING TRANSFERS
-                // if mint_transfer.op == "transfer" {
-                //   println!("=========================");
-                //   println!("Transfer: {:?}", mint_transfer);
-                //   println!("=========================");
-                //   handle_transaction(index, &location.outpoint)?;
-
-                //   Insert the `Brc20MintTransfer` struct into the MongoDB collection.
-                //   let future = insert_document_into_brcs_collection(&client, mint_transfer);
-                //   rt.block_on(future)?;
-                //   println!("----------------");
-                // }
               }
             }
           }
@@ -235,14 +259,38 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
       }
     }
   }
+  // print hashmap
+  println!("=========================");
+  println!("Ticker Map: {:?}", ticker_map);
+  println!("=========================");
 
   Ok(())
+}
+
+pub(crate) fn get_owner(
+  index: &Index,
+  outpoint: &OutPoint,
+) -> Result<Address, Box<dyn std::error::Error>> {
+  // Get the raw transaction info.
+  let raw_tx_info = index
+    .client
+    .get_raw_transaction_info(&outpoint.txid, None)?;
+
+  // Get the controlling address of this output
+  let script_pubkey = &raw_tx_info.vout[outpoint.vout as usize].script_pub_key;
+  let this_address = Address::from_script(&script_pubkey.script().unwrap(), Network::Testnet)
+    .map_err(|_| {
+      println!("Couldn't derive address from scriptPubKey");
+      "Couldn't derive address from scriptPubKey"
+    })?;
+
+  Ok(this_address)
 }
 
 pub(crate) fn handle_transaction(
   index: &Index,
   outpoint: &OutPoint,
-) -> Result<Address, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
   // Get the raw transaction info.
   let raw_tx_info = index
     .client
@@ -254,38 +302,30 @@ pub(crate) fn handle_transaction(
   // Get the transaction Inputs
   let inputs = &raw_tx_info.transaction()?.input;
 
-  // Get the transaction Outputs
-  let outputs = &raw_tx_info.transaction()?.output;
-
-  // Get the address of this output
-  let script_pubkey = &raw_tx_info.vout[outpoint.vout as usize].script_pub_key;
-  let this_address = Address::from_script(&script_pubkey.script().unwrap(), Network::Testnet)
-    .map_err(|_| {
-      println!("Couldn't derive address from scriptPubKey");
-      "Couldn't derive address from scriptPubKey"
-    })?;
-
-  println!("This Address: {}", this_address);
-
   // Get the addresses and values of the inputs.
   let input_addresses_values = transaction_inputs_to_addresses_values(index, inputs)?;
   for (index, (address, value)) in input_addresses_values.iter().enumerate() {
     println!("Input Address {}: {}, Value: {}", index + 1, address, value);
   }
 
-  println!("=====");
-  // Get the addresses and values of the outputs.
-  let output_addresses_values = transaction_outputs_to_addresses_values(outputs)?;
-  for (index, (address, value)) in output_addresses_values.iter().enumerate() {
-    println!(
-      "Output Address {}: {}, Value: {}",
-      index + 1,
-      address,
-      value
-    );
-  }
+  display_input_info(&raw_tx_info);
 
-  Ok(this_address)
+  println!("=====");
+  // Get the transaction Outputs
+  // let outputs = &raw_tx_info.transaction()?.output;
+
+  // Get the addresses and values of the outputs.
+  // let output_addresses_values = transaction_outputs_to_addresses_values(outputs)?;
+  // for (index, (address, value)) in output_addresses_values.iter().enumerate() {
+  //   println!(
+  //     "Output Address {}: {}, Value: {}",
+  //     index + 1,
+  //     address,
+  //     value
+  //   );
+  // }
+
+  Ok(())
 }
 
 fn transaction_inputs_to_addresses_values(
@@ -398,7 +438,6 @@ fn display_output_info(raw_transaction_info: &GetRawTransactionResult, vout_inde
   if let Some(vout) = raw_transaction_info.vout.get(vout_index) {
     println!("----------------------------------------------");
     println!("Vout {}", vout_index);
-    println!("----------------------------------------------");
     println!("- Value: {:?}", vout.value);
     println!("- N: {:?}", vout.n);
 
