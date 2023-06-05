@@ -12,6 +12,105 @@ pub struct Output {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Brc20Tx {
+  pub tx_id: Txid,
+  pub vout: u32,
+  pub blocktime: u64,
+  pub is_self_tx: bool,
+  pub owner: Address,
+  pub sender_addresses: Vec<Address>,
+}
+
+impl Brc20Tx {
+  pub fn new(
+    raw_tx_result: &GetRawTransactionResult,
+    owner: &Address,
+    sender_addresses: Vec<Address>,
+  ) -> Result<Self, Box<dyn std::error::Error>> {
+    let tx_id = raw_tx_result.txid;
+    let vout = raw_tx_result.vout[0].n;
+
+    // Get the blocktime from the raw transaction result
+    let blocktime = raw_tx_result
+      .blocktime
+      .ok_or_else(|| "Blocktime not found in raw transaction result")?;
+
+    // Check if this is a self transaction
+    let is_self_tx = is_self_transaction(&owner, &sender_addresses);
+
+    // Create the Brc20Tx instance
+    let brc20_tx = Brc20Tx {
+      tx_id,
+      vout,
+      blocktime: blocktime as u64,
+      is_self_tx,
+      owner: owner.clone(),
+      sender_addresses,
+    };
+
+    // Perform any additional processing or validation if needed
+
+    Ok(brc20_tx)
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Brc20MintTx {
+  pub brc20_tx: Brc20Tx,
+  pub mint: Brc20MintTransfer,
+  pub is_valid: bool,
+}
+
+impl Brc20MintTx {
+  pub fn new(brc20_tx: Brc20Tx, mint: Brc20MintTransfer, is_valid: bool) -> Self {
+    Brc20MintTx {
+      brc20_tx,
+      mint,
+      is_valid,
+    }
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Brc20TransferTx {
+  pub brc20_tx: Brc20Tx,
+  pub transfer: Brc20MintTransfer,
+  pub sender: Address,
+  pub owner: Address,
+  pub is_inscription: bool,
+  pub is_valid: bool,
+}
+
+impl Brc20TransferTx {
+  pub fn new(
+    brc20_tx: Brc20Tx,
+    transfer: Brc20MintTransfer,
+    sender: Address,
+    owner: Address,
+    is_inscription: bool,
+  ) -> Self {
+    Brc20TransferTx {
+      brc20_tx,
+      transfer,
+      sender,
+      owner,
+      is_inscription,
+      is_valid: false,
+    }
+  }
+
+  /// Sets the validity of the transfer.
+  ///
+  /// # Arguments
+  ///
+  /// * `is_valid` - A bool indicating the validity of the transfer.
+  pub fn set_validity(mut self, is_valid: bool) -> Self {
+    self.is_valid = is_valid;
+    self
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Brc20Deploy {
   pub p: String,
   pub op: String,
@@ -56,12 +155,70 @@ impl ToDocument for Brc20MintTransfer {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UserBalance {
+  overall_balance: u64,
+  transferable_balance: u64,
+}
+
+impl UserBalance {
+  pub fn new(overall_balance: u64, transferable_balance: u64) -> Self {
+    UserBalance {
+      overall_balance,
+      transferable_balance,
+    }
+  }
+
+  pub fn get_overall_balance(&self) -> u64 {
+    self.overall_balance
+  }
+
+  pub fn get_transferable_balance(&self) -> u64 {
+    self.transferable_balance
+  }
+
+  pub fn get_user_available_balance(&self) -> u64 {
+    self.overall_balance - self.transferable_balance
+  }
+
+  pub fn increase_overall_balance(&mut self, amount: u64) {
+    self.overall_balance += amount;
+  }
+
+  pub fn decrease_overall_balance(&mut self, amount: u64) -> Result<(), String> {
+    if self.overall_balance >= amount {
+      self.overall_balance -= amount;
+      Ok(())
+    } else {
+      Err("Decrease amount exceeds overall balance".to_string())
+    }
+  }
+
+  pub fn increase_transferable_balance(&mut self, amount: u64) -> Result<(), String> {
+    if self.transferable_balance + amount <= self.overall_balance {
+      self.transferable_balance += amount;
+      Ok(())
+    } else {
+      Err("Transferable balance exceeds overall balance".to_string())
+    }
+  }
+
+  pub fn decrease_transferable_balance(&mut self, amount: u64) -> Result<(), String> {
+    if self.transferable_balance >= amount {
+      self.transferable_balance -= amount;
+      Ok(())
+    } else {
+      Err("Decrease amount exceeds transferable balance".to_string())
+    }
+  }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Brc20Ticker {
   deploy: Brc20Deploy,
-  mints: Vec<Brc20MintTransfer>,
-  transfers: Vec<Brc20MintTransfer>,
-  total_minted: u64,               // New field: TotalMinted
-  balances: HashMap<Address, u64>, // New field: Balances
+  mints: Vec<Brc20MintTx>,
+  transfers: Vec<Brc20TransferTx>,
+  total_minted: u64,
+  balances: HashMap<Address, UserBalance>,
 }
 
 impl Brc20Ticker {
@@ -75,48 +232,192 @@ impl Brc20Ticker {
     }
   }
 
-  pub fn add_mint(&mut self, mint: Brc20MintTransfer, owner: Address) {
-    let minted_amount: u64 = mint.amt.parse().unwrap_or(0);
+  pub fn add_mint(&mut self, mut mint: Brc20MintTx) {
+    let minted_amount: u64 = mint.mint.amt.parse().unwrap_or(0);
     self.total_minted += minted_amount;
-    self.update_balance(owner, minted_amount);
+    self.increase_user_overall_balance(mint.brc20_tx.owner.clone(), minted_amount);
     self.mints.push(mint);
   }
 
-  pub fn add_transfer(&mut self, transfer: Brc20MintTransfer, owner: Address) {
-    let transfer_amount = transfer.amt.parse::<u64>().unwrap_or(0);
-    self.update_balance(owner, transfer_amount);
+  pub fn add_transfer(&mut self, transfer: Brc20TransferTx) {
     self.transfers.push(transfer);
   }
 
-  pub fn is_transfer_valid(&self, transfer: &Brc20MintTransfer) -> bool {
-    // Check if the sender has enough balance for the transfer.
-    // let sender_balance = self.balances.get(&transfer.from);
-    let transfer_amount = transfer.amt.parse::<u64>().unwrap_or(0);
-    // match sender_balance {
-    //   Some(balance) => *balance >= transfer_amount,
-    //   None => false,
-    // }
-    true
-  }
-
-  pub fn is_mint_valid(&self, mint: &Brc20MintTransfer) -> bool {
+  pub fn validate_mint(&self, mint: &Brc20MintTransfer, brc20_tx: Brc20Tx) -> Brc20MintTx {
     let minted_amount: u64 = mint.amt.parse().unwrap_or(0);
     let limit: u64 = self.deploy.lim.parse().unwrap_or(0);
     let max: u64 = self.deploy.max.parse().unwrap_or(0);
 
-    self.total_minted + minted_amount <= max && minted_amount <= limit
+    let is_valid =
+      self.total_minted + minted_amount <= max && minted_amount <= limit && brc20_tx.is_self_tx;
+
+    Brc20MintTx::new(brc20_tx, mint.clone(), is_valid)
   }
 
-  pub fn update_balance(&mut self, address: Address, amount: u64) {
+  pub fn increase_user_overall_balance(&mut self, address: Address, amount: u64) {
     if let Some(balance) = self.balances.get_mut(&address) {
-      *balance += amount;
+      balance.increase_overall_balance(amount);
     } else {
-      self.balances.insert(address, amount);
+      let user_balance = UserBalance::new(amount, 0);
+      self.balances.insert(address, user_balance);
     }
   }
 
-  pub fn get_balance(&self, address: &Address) -> Option<u64> {
+  /// Handles the transfer operation.
+  ///
+  /// # Arguments
+  ///
+  /// * `brc20_tx` - The Brc20Tx struct representing the transaction information.
+  /// * `mint_transfer` - The Brc20MintTransfer struct representing the transfer information.
+  /// * `owner` - The address of the owner performing the transfer.
+  ///
+  /// # Returns
+  ///
+  /// * `Brc20TransferTx` - The Brc20TransferTx struct representing the transfer operation.
+  pub fn handle_transfer(
+    &mut self,
+    brc20_tx: Brc20Tx,
+    mint_transfer: Brc20MintTransfer,
+    owner: &Address,
+  ) -> Brc20TransferTx {
+    if brc20_tx.is_self_tx {
+      // Inscribe Transfer
+      return self.handle_inscribe_transfer(brc20_tx, mint_transfer, owner);
+    } else {
+      // Send Transfer
+      return self.handle_send_transfer(&owner, brc20_tx, mint_transfer);
+    }
+  }
+
+  /// Handles the transfer amount validation for an inscription transfer.
+  /// It checks if the transfer amount does not exceed the available balance of the owner.
+  ///
+  /// # Arguments
+  ///
+  /// * `owner_address` - The address of the owner performing the inscription transfer.
+  /// * `transfer` - The Brc20MintTransfer struct representing the transfer information.
+  /// * `brc_transfer_tx` - Mutable reference to the Brc20TransferTx struct to update its validity.
+  ///
+  /// # Returns
+  ///
+  /// * `bool` - Indicates whether the inscription transfer amount is valid or not.
+  pub fn handle_inscribe_transfer_amount(
+    &mut self,
+    brc_transfer_tx: Brc20TransferTx,
+  ) -> Brc20TransferTx {
+    // Get the transfer amount
+    let transfer_amount = brc_transfer_tx.transfer.amt.parse::<u64>().unwrap_or(0);
+
+    // Check if the user balance exists
+    if let Some(sender_balance) = self.balances.get_mut(&brc_transfer_tx.owner) {
+      let available_balance = sender_balance.get_user_available_balance();
+
+      if available_balance >= transfer_amount {
+        // Increase the transferable balance of the sender
+        sender_balance.increase_transferable_balance(transfer_amount);
+        println!(
+          "VALID: Transfer amount is valid. Sender: {:#?}",
+          brc_transfer_tx.owner
+        );
+        brc_transfer_tx.set_validity(true)
+      } else {
+        println!("INVALID: Transfer amount exceeds available balance.");
+        brc_transfer_tx.set_validity(false)
+      }
+    } else {
+      // User balance not found
+      // println!("INVALID: User balance not found.");
+      brc_transfer_tx.set_validity(false)
+    }
+  }
+
+  pub fn handle_inscribe_transfer(
+    &mut self,
+    brc20_tx: Brc20Tx,
+    mint_transfer: Brc20MintTransfer,
+    owner_address: &Address,
+  ) -> Brc20TransferTx {
+    // Instantiate a new Brc20TransferTx struct
+    let brc_transfer_tx: Brc20TransferTx = Brc20TransferTx::new(
+      brc20_tx,
+      mint_transfer,
+      owner_address.clone(),
+      owner_address.clone(),
+      true,
+    );
+
+    // Check if the transfer amount is valid
+    self.handle_inscribe_transfer_amount(brc_transfer_tx.clone())
+  }
+
+  /// Handles the send transfer operation.
+  ///
+  /// # Arguments
+  ///
+  /// * `owner_address` - The address of the owner performing the transfer.
+  /// * `sender_addresses` - The list of sender addresses involved in the transfer.
+  /// * `transfer` - The Brc20MintTransfer struct representing the transfer information.
+  ///
+  /// # Returns
+  ///
+  /// * `Brc20TransferTx` - The Brc20TransferTx struct representing the transfer operation.
+  pub fn handle_send_transfer(
+    &mut self,
+    owner_address: &Address,
+    brc20_tx: Brc20Tx,
+    transfer: Brc20MintTransfer,
+  ) -> Brc20TransferTx {
+    let transfer_amount = transfer.amt.parse::<u64>().unwrap_or(0);
+
+    // Instantiate a new Brc20TransferTx struct
+    let mut brc_transfer_tx: Brc20TransferTx = Brc20TransferTx::new(
+      brc20_tx,
+      transfer,
+      owner_address.clone(),
+      owner_address.clone(),
+      false,
+    );
+
+    for sender_address in &brc_transfer_tx.brc20_tx.sender_addresses {
+      if let Some(sender_balance) = self.balances.get_mut(&sender_address) {
+        let transferable_balance = sender_balance.get_transferable_balance();
+        if transferable_balance >= transfer_amount {
+          sender_balance.decrease_overall_balance(transfer_amount);
+          sender_balance.decrease_transferable_balance(transfer_amount);
+          if let Some(owner_balance) = self.balances.get_mut(owner_address) {
+            owner_balance.increase_overall_balance(transfer_amount);
+          } else {
+            let user_balance = UserBalance::new(transfer_amount, 0);
+            self.balances.insert(owner_address.clone(), user_balance);
+          }
+          println!(
+            "VALID: Transfer amount is valid. Sender: {:#?}",
+            sender_address
+          );
+
+          brc_transfer_tx.is_valid = true;
+          return brc_transfer_tx; // Return as soon as a successful transfer is found
+        }
+      }
+    }
+
+    brc_transfer_tx // Return invalid struct if no successful transfer is found
+  }
+
+  pub fn get_user_balance(&self, address: &Address) -> Option<UserBalance> {
     self.balances.get(address).cloned()
+  }
+
+  pub fn get_total_minted(&self) -> u64 {
+    self.total_minted
+  }
+
+  pub fn get_mints(&self) -> &[Brc20MintTx] {
+    &self.mints
+  }
+
+  pub fn get_transfers(&self) -> &[Brc20TransferTx] {
+    &self.transfers
   }
 }
 
@@ -169,19 +470,26 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
           if let Some(inc) = inscription.body() {
             let parse_inc = str::from_utf8(inc)?;
 
+            // Get the raw transaction info.
+            let raw_tx_info = index
+              .client
+              .get_raw_transaction_info(&location.outpoint.txid, None)?;
+
+            // Retrieve the owner address
+            let owner = get_owner_of_outpoint(&location.outpoint, &raw_tx_info)?;
+
+            // Retrieve the sender addresses
+            let sender_addresses = find_sender_addresses(index, &raw_tx_info);
+
+            // instantiate a new Brc20Tx struct
+            let brc20_tx = Brc20Tx::new(&raw_tx_info, &owner, sender_addresses)?;
+
             // Parse the body content as a `Brc20Deploy` struct.
             let deploy: Result<Brc20Deploy, _> = serde_json::from_str(parse_inc);
             if let Ok(deploy) = deploy {
-              if deploy.op == "deploy" {
+              if deploy.op == "deploy" && !ticker_map.contains_key(&deploy.tick.to_lowercase()) {
                 println!("=========================");
                 println!("Deploy: {:?}", deploy);
-                println!("=========================");
-
-                // Check if the ticker already exists in the hashmap.
-                if ticker_map.contains_key(&deploy.tick.to_lowercase()) {
-                  println!("Duplicate deploy. Skipping...");
-                  continue;
-                }
 
                 // Handle the transaction information.
                 // handle_transaction(index, &location.outpoint)?;
@@ -192,65 +500,59 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
 
                 // Instantiate a new `Brc20Ticker` struct and update the hashmap with the deploy information.
                 let ticker = Brc20Ticker::new(deploy.clone());
-                ticker_map.insert(deploy.tick.clone(), ticker);
+                ticker_map.insert(deploy.tick.clone().to_lowercase(), ticker);
               }
             } else {
               // Parse the body content as a `Brc20MintTransfer` struct.
               let mint_transfer: Result<Brc20MintTransfer, _> = serde_json::from_str(parse_inc);
               if let Ok(mint_transfer) = mint_transfer {
-                // Check if the ticker struct exists for the ticker.
+                // Check if the ticker struct exists for the ticker.Otherwise ignore the mint transfer.
                 if let Some(ticker) = ticker_map.get_mut(&mint_transfer.tick) {
+                  // if mint, then validate the mint operation
                   if mint_transfer.op == "mint" {
-                    println!("=========================");
-                    println!("Mint: {:?}", mint_transfer);
-                    println!("-------------------------");
+                    let brc20_mint_tx = ticker.validate_mint(&mint_transfer, brc20_tx);
 
-                    if ticker.is_mint_valid(&mint_transfer) {
-                      // Handle the transaction information and retrieve owner address.
-                      let owner = get_owner(index, &location.outpoint)?;
-                      // handle_transaction(index, &location.outpoint)?;
-                      println!("To Address: {:?}", owner);
-
+                    if brc20_mint_tx.is_valid {
+                      println!("=========================");
+                      println!("Mint: {:?}", mint_transfer);
+                      println!("Owner Address: {:?}", owner);
                       // Update the ticker struct with the mint operation.
-                      ticker.add_mint(mint_transfer.clone(), owner);
+                      ticker.add_mint(brc20_mint_tx);
 
                       // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
-                      let future =
-                        insert_document_into_brcs_collection(&client, mint_transfer.clone());
+                      let future = insert_document_into_brcs_collection(&client, mint_transfer);
                       rt.block_on(future)?;
                     } else {
-                      println!("Invalid mint operation. Skipping...");
+                      // println!("Invalid mint operation. Skipping...");
                     }
                   } else if mint_transfer.op == "transfer" {
-                    println!("=========================");
-                    println!("Transfer: {:?}", mint_transfer);
-                    println!("=========================");
-                    handle_transaction(index, &location.outpoint)?;
+                    // Call the handle_transfer function
+                    let brc20_transfer_tx =
+                      ticker.handle_transfer(brc20_tx, mint_transfer.clone(), &owner);
 
                     // Check if the transfer is valid.
-                    if ticker.is_transfer_valid(&mint_transfer) {
-                      // Handle the transaction information and retrieve owner address.
-                      let owner = get_owner(index, &location.outpoint)?;
-                      println!("To Address: {:?}", owner);
+                    if brc20_transfer_tx.is_valid {
+                      println!("=========================");
+                      println!("Transfer: {:?}", mint_transfer);
+                      println!("Owner Address: {:?}", owner);
 
                       // Update the ticker struct with the transfer operation.
-                      ticker.add_transfer(mint_transfer.clone(), owner);
+                      ticker.add_transfer(brc20_transfer_tx);
 
                       // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
                       let future =
                         insert_document_into_brcs_collection(&client, mint_transfer.clone());
                       rt.block_on(future)?;
                     } else {
-                      println!("Invalid transfer operation. Skipping...");
+                      // println!("Invalid transfer operation. Skipping...");
                     }
 
                     // Insert the `Brc20MintTransfer` struct into the MongoDB collection.
                     let future = insert_document_into_brcs_collection(&client, mint_transfer);
                     rt.block_on(future)?;
-                    println!("----------------");
                   }
                 } else {
-                  // println!("Ticker not found. Skipping mint operation...");
+                  // println!("INVALID: Ticker not found.");
                 }
               }
             }
@@ -267,15 +569,10 @@ pub(crate) fn index_brc20(index: &Index) -> Result<(), Box<dyn std::error::Error
   Ok(())
 }
 
-pub(crate) fn get_owner(
-  index: &Index,
+pub(crate) fn get_owner_of_outpoint(
   outpoint: &OutPoint,
+  raw_tx_info: &GetRawTransactionResult,
 ) -> Result<Address, Box<dyn std::error::Error>> {
-  // Get the raw transaction info.
-  let raw_tx_info = index
-    .client
-    .get_raw_transaction_info(&outpoint.txid, None)?;
-
   // Get the controlling address of this output
   let script_pubkey = &raw_tx_info.vout[outpoint.vout as usize].script_pub_key;
   let this_address = Address::from_script(&script_pubkey.script().unwrap(), Network::Testnet)
@@ -284,178 +581,231 @@ pub(crate) fn get_owner(
       "Couldn't derive address from scriptPubKey"
     })?;
 
+  // println!("Script Pub Key: {:?}", script_pubkey.asm);
+
   Ok(this_address)
 }
 
-pub(crate) fn handle_transaction(
-  index: &Index,
-  outpoint: &OutPoint,
-) -> Result<(), Box<dyn std::error::Error>> {
-  // Get the raw transaction info.
-  let raw_tx_info = index
-    .client
-    .get_raw_transaction_info(&outpoint.txid, None)?;
+fn find_sender_addresses(index: &Index, raw_tx_info: &GetRawTransactionResult) -> Vec<Address> {
+  let mut sender_addresses: Vec<Address> = Vec::new();
 
-  // Display the raw transaction info.
-  display_raw_transaction_info(&raw_tx_info);
-
-  // Get the transaction Inputs
-  let inputs = &raw_tx_info.transaction()?.input;
-
-  // Get the addresses and values of the inputs.
-  let input_addresses_values = transaction_inputs_to_addresses_values(index, inputs)?;
-  for (index, (address, value)) in input_addresses_values.iter().enumerate() {
-    println!("Input Address {}: {}, Value: {}", index + 1, address, value);
-  }
-
-  display_input_info(&raw_tx_info);
-
-  println!("=====");
-  // Get the transaction Outputs
-  // let outputs = &raw_tx_info.transaction()?.output;
-
-  // Get the addresses and values of the outputs.
-  // let output_addresses_values = transaction_outputs_to_addresses_values(outputs)?;
-  // for (index, (address, value)) in output_addresses_values.iter().enumerate() {
-  //   println!(
-  //     "Output Address {}: {}, Value: {}",
-  //     index + 1,
-  //     address,
-  //     value
-  //   );
-  // }
-
-  Ok(())
-}
-
-fn transaction_inputs_to_addresses_values(
-  index: &Index,
-  inputs: &Vec<TxIn>,
-) -> Result<Vec<(Address, u64)>, Box<dyn std::error::Error>> {
-  let mut addresses_values: Vec<(Address, u64)> = vec![];
-
-  for input in inputs {
-    let prev_output = input.previous_output;
-    println!(
-      "Input from transaction: {:?}, index: {:?}",
-      prev_output.txid, prev_output.vout
-    );
-
-    let prev_tx_info = index
-      .client
-      .get_raw_transaction_info(&prev_output.txid, None)?;
-
-    display_output_info(&prev_tx_info, prev_output.vout.try_into()?);
-
-    let prev_tx = prev_tx_info.transaction()?;
-
-    let output = &prev_tx.output[usize::try_from(prev_output.vout).unwrap()];
-    let script_pub_key = &output.script_pubkey;
-
-    let address = Address::from_script(&script_pub_key, Network::Testnet).map_err(|_| {
-      println!("Couldn't derive address from scriptPubKey");
-      "Couldn't derive address from scriptPubKey"
-    })?;
-
-    // Add both the address and the value of the output to the list
-    addresses_values.push((address, output.value));
-
-    println!("=====");
-  }
-
-  if addresses_values.is_empty() {
-    Err("Couldn't derive any addresses or values from scriptPubKeys".into())
-  } else {
-    Ok(addresses_values)
-  }
-}
-
-fn transaction_outputs_to_addresses_values(
-  outputs: &Vec<TxOut>,
-) -> Result<Vec<(Address, u64)>, Box<dyn std::error::Error>> {
-  let mut addresses_values: Vec<(Address, u64)> = vec![];
-
-  for output in outputs {
-    let script_pub_key = &output.script_pubkey;
-
-    if let Ok(address) = Address::from_script(&script_pub_key, Network::Testnet) {
-      // Add both the address and the value of the output to the list
-      addresses_values.push((address, output.value));
-    } else {
-      println!("Couldn't derive address from scriptPubKey");
+  for input in &raw_tx_info.vin {
+    if let Some(prev_tx_info) = input
+      .txid
+      .as_ref()
+      .and_then(|txid| index.client.get_raw_transaction_info(&txid, None).ok())
+    {
+      let output_index = input.vout.unwrap();
+      if let Some(output) = prev_tx_info.vout.get(output_index as usize) {
+        if let Some(sender_address) = &output.script_pub_key.address {
+          sender_addresses.push(sender_address.clone());
+        }
+      }
     }
   }
 
-  if addresses_values.is_empty() {
-    Err("Couldn't derive any addresses or values from scriptPubKeys".into())
-  } else {
-    Ok(addresses_values)
-  }
+  sender_addresses
 }
 
-fn display_raw_transaction_info(raw_transaction_info: &GetRawTransactionResult) {
-  println!("Raw Transaction Information:");
-  println!("----------------");
-  println!("Txid: {:?}", raw_transaction_info.txid);
-  println!("Hash: {:?}", raw_transaction_info.hash);
-  println!("Size: {:?}", raw_transaction_info.size);
-  println!("Vsize: {:?}", raw_transaction_info.vsize);
-  println!("Version: {:?}", raw_transaction_info.version);
-  println!("Locktime: {:?}", raw_transaction_info.locktime);
-  println!("Blockhash: {:?}", raw_transaction_info.blockhash);
-  println!("Confirmations: {:?}", raw_transaction_info.confirmations);
-  println!("Time: {:?}", raw_transaction_info.time);
-  println!("Blocktime: {:?}", raw_transaction_info.blocktime);
-  println!();
+fn is_self_transaction(owner_address: &Address, sender_addresses: &[Address]) -> bool {
+  sender_addresses.contains(owner_address)
 }
 
-fn display_input_info(raw_transaction_info: &GetRawTransactionResult) {
-  println!("Inputs (Vin):");
-  println!("-------------");
-  for (i, vin) in raw_transaction_info.vin.iter().enumerate() {
-    println!("Vin {}: {:?}", i + 1, vin);
-    if let Some(txid) = &vin.txid {
-      println!("  txid: {:?}", txid);
-    }
-    if let Some(vout) = vin.vout {
-      println!("  vout: {:?}", vout);
-    }
-    if let Some(script_sig) = &vin.script_sig {
-      println!("  script_sig: {:?}", script_sig);
-    }
-    if let Some(txinwitness) = &vin.txinwitness {
-      println!("  txinwitness: {:?}", txinwitness);
-    }
-    if let Some(coinbase) = &vin.coinbase {
-      println!("  coinbase: {:?}", coinbase);
-    }
-    println!("  sequence: {:?}", vin.sequence);
-  }
-  println!();
-}
+// fn handle_transfer(index: &Index, raw_tx_info: &GetRawTransactionResult) {
+//   println!("Inputs:");
 
-fn display_output_info(raw_transaction_info: &GetRawTransactionResult, vout_index: usize) {
-  if let Some(vout) = raw_transaction_info.vout.get(vout_index) {
-    println!("----------------------------------------------");
-    println!("Vout {}", vout_index);
-    println!("- Value: {:?}", vout.value);
-    println!("- N: {:?}", vout.n);
+//   for (i, input) in raw_tx_info.vin.iter().enumerate() {
+//     let prev_tx_info = match &input.txid {
+//       Some(txid) => index.client.get_raw_transaction_info(&txid, None),
+//       None => continue,
+//     };
 
-    let script_pub_key = &vout.script_pub_key;
-    println!("- Script Pub Key:");
-    println!("    - ASM: {:?}", script_pub_key.asm);
-    println!("    - Hex: {:?}", script_pub_key.hex);
-    println!("    - Required Signatures: {:?}", script_pub_key.req_sigs);
-    println!("    - Type: {:?}", script_pub_key.type_);
-    println!("    - Addresses: {:?}", script_pub_key.addresses);
-    println!("    - Address: {:?}", script_pub_key.address);
+//     if let Ok(prev_tx_info) = prev_tx_info {
+//       let output_index = input.vout.unwrap();
+//       if let Some(output) = prev_tx_info.vout.get(output_index as usize) {
+//         let value = output.value;
+//         let script_pubkey = output.script_pub_key.clone();
+//         let address =
+//           Address::from_script(&script_pubkey.script().unwrap(), Network::Testnet).unwrap();
 
-    println!();
-  } else {
-    println!("Invalid vout index: {}", vout_index);
-  }
-  println!();
-}
+//         println!("Input {}: ", i + 1);
+//         println!("  Value: {}", value);
+//         println!("  Address: {:?}", address);
+//         println!("  Script Pub Key: {:?}", script_pubkey.asm);
+//       }
+//     }
+//   }
+// }
+
+// pub(crate) fn handle_transaction(
+//   index: &Index,
+//   outpoint: &OutPoint,
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//   // Get the raw transaction info.
+//   let raw_tx_info = index
+//     .client
+//     .get_raw_transaction_info(&outpoint.txid, None)?;
+
+//   // Display the raw transaction info.
+//   // display_raw_transaction_info(&raw_tx_info);
+
+//   // Get the transaction Inputs
+//   let inputs = &raw_tx_info.transaction()?.input;
+
+//   // Get the addresses and values of the inputs.
+//   let input_addresses_values = transaction_inputs_to_addresses_values(index, inputs)?;
+//   for (index, (address, value)) in input_addresses_values.iter().enumerate() {
+//     println!("Input Address {}: {}, Value: {}", index + 1, address, value);
+//   }
+
+//   // display_input_info(&raw_tx_info);
+
+//   println!("=====");
+//   // Get the transaction Outputs
+//   // let outputs = &raw_tx_info.transaction()?.output;
+
+//   // Get the addresses and values of the outputs.
+//   // let output_addresses_values = transaction_outputs_to_addresses_values(outputs)?;
+//   // for (index, (address, value)) in output_addresses_values.iter().enumerate() {
+//   //   println!(
+//   //     "Output Address {}: {}, Value: {}",
+//   //     index + 1,
+//   //     address,
+//   //     value
+//   //   );
+//   // }
+
+//   Ok(())
+// }
+
+// fn transaction_inputs_to_addresses_values(
+//   index: &Index,
+//   inputs: &Vec<TxIn>,
+// ) -> Result<Vec<(Address, u64)>, Box<dyn std::error::Error>> {
+//   let mut addresses_values: Vec<(Address, u64)> = vec![];
+
+//   for input in inputs {
+//     let prev_output = input.previous_output;
+//     println!(
+//       "Input from transaction: {:?}, index: {:?}",
+//       prev_output.txid, prev_output.vout
+//     );
+
+//     let prev_tx_info = index
+//       .client
+//       .get_raw_transaction_info(&prev_output.txid, None)?;
+
+//     // display_output_info(&prev_tx_info, prev_output.vout.try_into()?);
+
+//     let prev_tx = prev_tx_info.transaction()?;
+
+//     let output = &prev_tx.output[usize::try_from(prev_output.vout).unwrap()];
+//     let script_pub_key = &output.script_pubkey;
+
+//     let address = Address::from_script(&script_pub_key, Network::Testnet).map_err(|_| {
+//       println!("Couldn't derive address from scriptPubKey");
+//       "Couldn't derive address from scriptPubKey"
+//     })?;
+
+//     // Add both the address and the value of the output to the list
+//     addresses_values.push((address, output.value));
+
+//     println!("=====");
+//   }
+
+//   if addresses_values.is_empty() {
+//     Err("Couldn't derive any addresses or values from scriptPubKeys".into())
+//   } else {
+//     Ok(addresses_values)
+//   }
+// }
+
+// fn transaction_outputs_to_addresses_values(
+//   outputs: &Vec<TxOut>,
+// ) -> Result<Vec<(Address, u64)>, Box<dyn std::error::Error>> {
+//   let mut addresses_values: Vec<(Address, u64)> = vec![];
+
+//   for output in outputs {
+//     let script_pub_key = &output.script_pubkey;
+
+//     if let Ok(address) = Address::from_script(&script_pub_key, Network::Testnet) {
+//       // Add both the address and the value of the output to the list
+//       addresses_values.push((address, output.value));
+//     } else {
+//       println!("Couldn't derive address from scriptPubKey");
+//     }
+//   }
+
+//   if addresses_values.is_empty() {
+//     Err("Couldn't derive any addresses or values from scriptPubKeys".into())
+//   } else {
+//     Ok(addresses_values)
+//   }
+// }
+
+// fn display_raw_transaction_info(raw_transaction_info: &GetRawTransactionResult) {
+//   println!("Raw Transaction Information:");
+//   println!("----------------");
+//   println!("Txid: {:?}", raw_transaction_info.txid);
+//   println!("Hash: {:?}", raw_transaction_info.hash);
+//   // println!("Size: {:?}", raw_transaction_info.size);
+//   // println!("Vsize: {:?}", raw_transaction_info.vsize);
+//   // println!("Version: {:?}", raw_transaction_info.version);
+//   // println!("Locktime: {:?}", raw_transaction_info.locktime);
+//   println!("Blockhash: {:?}", raw_transaction_info.blockhash);
+//   // println!("Confirmations: {:?}", raw_transaction_info.confirmations);
+//   println!("Time: {:?}", raw_transaction_info.time);
+//   println!("Blocktime: {:?}", raw_transaction_info.blocktime);
+//   println!();
+// }
+
+// fn display_input_info(raw_transaction_info: &GetRawTransactionResult) {
+//   println!("Inputs (Vin):");
+//   println!("-------------");
+//   for (i, vin) in raw_transaction_info.vin.iter().enumerate() {
+//     println!("Vin {}: {:?}", i + 1, vin);
+//     if let Some(txid) = &vin.txid {
+//       println!("  txid: {:?}", txid);
+//     }
+//     if let Some(vout) = vin.vout {
+//       println!("  vout: {:?}", vout);
+//     }
+//     if let Some(script_sig) = &vin.script_sig {
+//       println!("  script_sig: {:?}", script_sig);
+//     }
+//     if let Some(txinwitness) = &vin.txinwitness {
+//       println!("  txinwitness: {:?}", txinwitness);
+//     }
+//     if let Some(coinbase) = &vin.coinbase {
+//       println!("  coinbase: {:?}", coinbase);
+//     }
+//     println!("  sequence: {:?}", vin.sequence);
+//   }
+//   println!();
+// }
+
+// fn display_output_info(raw_transaction_info: &GetRawTransactionResult, vout_index: usize) {
+//   if let Some(vout) = raw_transaction_info.vout.get(vout_index) {
+//     println!("----------------------------------------------");
+//     println!("Vout {}", vout_index);
+//     println!("- Value: {:?}", vout.value);
+//     println!("- N: {:?}", vout.n);
+
+//     let script_pub_key = &vout.script_pub_key;
+//     println!("- Script Pub Key:");
+//     println!("    - ASM: {:?}", script_pub_key.asm);
+//     println!("    - Hex: {:?}", script_pub_key.hex);
+//     println!("    - Required Signatures: {:?}", script_pub_key.req_sigs);
+//     println!("    - Type: {:?}", script_pub_key.type_);
+//     println!("    - Addresses: {:?}", script_pub_key.addresses);
+//     println!("    - Address: {:?}", script_pub_key.address);
+
+//     println!();
+//   } else {
+//     println!("Invalid vout index: {}", vout_index);
+//   }
+//   println!();
+// }
 
 /// The `insert_document_into_brcs_collection` function is responsible for inserting a document into the "brcs" collection in MongoDB.
 ///
