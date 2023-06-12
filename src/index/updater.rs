@@ -1,5 +1,5 @@
-use super::brc20_indexer::index_brc20;
-// use crate::subcommand::wallet::inscriptions_all::index_brc20;
+// use super::brc20_indexer::index_brc20;
+use super::brc20_index::index_brc20;
 
 use {
   self::inscription_updater::InscriptionUpdater,
