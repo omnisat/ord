@@ -98,7 +98,7 @@ impl Brc20TransferTx {
           println!("VALID: Transfer inscription added. Owner: {:#?}", owner);
 
           // Increase the transferable balance of the sender
-          user_balance.add_transfer_inscription(&transfer_tx);
+          user_balance.add_transfer_inscription(transfer_tx);
         } else {
           reason = "Transfer amount exceeds available balance".to_string();
         }
