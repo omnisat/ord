@@ -74,6 +74,30 @@ impl Brc20TransferTx {
     self.is_valid
   }
 
+  /// Handles the processing of an inscribed transfer amount in a BRC20 transaction.
+  ///
+  /// Takes in mutable references to a ticker map and an invalid transaction map.
+  /// The ticker map is a `HashMap` that maps a ticker symbol string to a BRC20Ticker object.
+  /// The invalid transaction map is a map that associates invalid BRC20 transactions with a reason for their invalidity.
+  ///
+  /// Checks if the ticker symbol exists in the ticker map. If it does, it proceeds to get the transfer amount
+  /// and then checks if the user balance exists in the BRC20Ticker object associated with the ticker symbol.
+  ///
+  /// If the user balance is found, it compares the available balance with the transfer amount.
+  /// If the available balance is greater than or equal to the transfer amount, the transaction is valid,
+  /// prints a validation message, and adds the transaction to the list of transfer inscriptions in the user balance.
+  ///
+  /// If the available balance is less than the transfer amount, it considers the transaction as invalid
+  /// and sets the reason for invalidity as "Transfer amount exceeds available balance".
+  ///
+  /// If the user balance is not found, it sets the reason for invalidity as "User balance not found".
+  ///
+  /// If the ticker symbol is not found in the ticker map, it sets the reason for invalidity as "Ticker not found".
+  ///
+  /// If invalid, it creates a new `InvalidBrc20Tx` object,
+  /// associates it with the reason for invalidity, and adds it to the invalid transaction map.
+  ///
+  /// The function returns a clone of the transfer transaction
   pub fn handle_inscribe_transfer_amount(
     &self,
     ticker_map: &mut HashMap<String, Brc20Ticker>,

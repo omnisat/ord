@@ -69,11 +69,11 @@ impl UserBalance {
     self.active_transfer_inscriptions.remove(&outpoint)
   }
 
-  pub fn add_mint(&mut self, mint: Brc20MintTx) {
+  pub fn add_mint_tx(&mut self, mint: Brc20MintTx) {
     self.mints.push(mint);
   }
 
-  pub fn get_mints(&self) -> &Vec<Brc20MintTx> {
+  pub fn get_mint_txs(&self) -> &Vec<Brc20MintTx> {
     &self.mints
   }
 
@@ -82,13 +82,13 @@ impl UserBalance {
     &self.active_transfer_inscriptions
   }
 
-  pub fn get_transfer_sends(&self) -> &Vec<Brc20TransferTx> {
-    &self.transfer_sends
-  }
+  // pub fn get_transfer_sends(&self) -> &Vec<Brc20TransferTx> {
+  //   &self.transfer_sends
+  // }
 
-  pub fn get_transfer_receives(&self) -> &Vec<Brc20TransferTx> {
-    &self.transfer_receives
-  }
+  // pub fn get_transfer_receives(&self) -> &Vec<Brc20TransferTx> {
+  //   &self.transfer_receives
+  // }
 
   pub fn add_transfer_send(&mut self, transfer_send: Brc20TransferTx) {
     self
@@ -132,6 +132,13 @@ impl UserBalance {
     self.get_total_amount_from_transfer_receives() - self.get_total_amount_from_transfer_sends()
       + self.get_total_amount_from_mints()
   }
+
+  // get available balance using get_overall_balance_from_txs and active transfer inscriptions
+  pub fn get_available_balance_from_txs(&self) -> f64 {
+    self.get_overall_balance_from_txs() - self.get_transferable_balance()
+  }
+
+  // get available balance using get_overall_balance_from_txs and get_transferable_balance
 }
 
 impl fmt::Display for UserBalance {

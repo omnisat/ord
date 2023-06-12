@@ -17,6 +17,41 @@ pub struct Brc20Mint {
 }
 
 impl Brc20Mint {
+  /// Validates a BRC20 mint transaction.
+  ///
+  /// The function takes in a reference to a BRC20 transaction, a mutable reference to a ticker map,
+  /// and a mutable reference to an invalid transaction map.
+  /// The ticker map is a `HashMap` that maps a ticker symbol string to a BRC20Ticker object.
+  /// The invalid transaction map is a map that associates invalid BRC20 transactions with a reason for their invalidity.
+  ///
+  /// It begins by creating a new BRC20MintTx from the provided BRC20 transaction.
+  ///
+  /// Then, it checks if the ticker symbol for the mint operation exists in the ticker map.
+  ///
+  /// If it does, it gets the mint limit, maximum supply, total minted amount, and decimal places for the ticker,
+  /// and then converts the amount to be minted into a floating point number using these values.
+  ///
+  /// If the amount to be minted exceeds the limit, it marks the transaction as invalid and sets the reason for invalidity
+  /// as "Mint amount exceeds limit".
+  ///
+  /// If the sum of the total minted amount and the amount to be minted exceeds the maximum supply,
+  /// it adjusts the mint amount to the remaining supply, and sets a warning reason.
+  ///
+  /// If there's an error in conversion (e.g., the amount is not a valid number), it marks the transaction as invalid
+  /// and sets the reason for invalidity as the error message.
+  ///
+  /// If the ticker symbol does not exist in the ticker map, it marks the transaction as invalid
+  /// and sets the reason for invalidity as "Ticker symbol does not exist".
+  ///
+  /// If the transaction is marked as invalid (i.e., the `is_valid` flag is `false`),
+  /// it creates a new `InvalidBrc20Tx` object, associates it with the reason for invalidity,
+  /// and adds it to the invalid transaction map.
+  ///
+  /// If the transaction is valid, it retrieves the ticker object from the ticker map again,
+  /// and updates the ticker with the mint operation.
+  ///
+  /// Finally, it returns a `Brc20MintTx` object with the original transaction, the mint details,
+  /// the computed or adjusted amount, and the validity flag.
   pub fn validate<'a>(
     self,
     brc20_tx: &'a Brc20Tx,
@@ -44,10 +79,6 @@ impl Brc20Mint {
             // Adjust the mint amount to mint the remaining tokens
             let remaining_amount = max_supply - total_minted;
             brc20_mint_tx.amount = remaining_amount;
-            reason = format!(
-              "Total minted amount exceeds maximum. Adjusted mint amount to {}",
-              remaining_amount
-            );
           } else {
             brc20_mint_tx.amount = amount;
           }

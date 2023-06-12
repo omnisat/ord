@@ -38,15 +38,6 @@ impl Brc20Tx {
   }
 
   // Getters
-  pub fn get_tx_id(&self) -> Txid {
-    self.tx_id
-  }
-
-  pub fn get_vout(&self) -> u32 {
-    self.vout
-  }
-
-  //get OutPoint
   pub fn get_outpoint(&self) -> OutPoint {
     OutPoint {
       txid: self.tx_id,
@@ -54,25 +45,20 @@ impl Brc20Tx {
     }
   }
 
-  pub fn get_blocktime(&self) -> u64 {
-    self.blocktime
-  }
-
-  // get address as reference
   pub fn get_owner(&self) -> &Address {
     &self.owner
   }
 
-  pub fn get_inputs(&self) -> Vec<GetRawTransactionResultVin> {
-    self.inputs.clone()
+  pub fn get_blocktime(&self) -> u64 {
+    self.blocktime
+  }
+
+  pub fn get_inputs(&self) -> &Vec<GetRawTransactionResultVin> {
+    &self.inputs
   }
 
   pub fn get_inputs_len(&self) -> usize {
     self.inputs.len()
-  }
-
-  pub fn get_inputs_is_empty(&self) -> bool {
-    self.inputs.is_empty()
   }
 }
 

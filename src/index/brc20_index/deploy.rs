@@ -137,15 +137,15 @@ impl Brc20DeployTx {
     }
 
     // Update the validity of the Brc20DeployTx based on the reason
-    self.is_valid = reason.is_empty();
+    let valid_deploy_tx = self.set_valid(reason.is_empty());
 
     // Add the Brc20DeployTx to the invalid transaction map if necessary
-    if !self.is_valid {
-      let invalid_tx = InvalidBrc20Tx::new(self.brc20_tx.clone(), reason);
+    if !valid_deploy_tx.is_valid() {
+      let invalid_tx = InvalidBrc20Tx::new(valid_deploy_tx.get_brc20_tx().clone(), reason);
       invalid_tx_map.add_invalid_tx(invalid_tx);
     }
 
-    self
+    valid_deploy_tx
   }
 }
 
