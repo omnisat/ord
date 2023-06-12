@@ -40,38 +40,56 @@ impl Brc20Ticker {
   }
 
   pub fn add_mint(&mut self, mint: Brc20MintTx) {
-    let amount = mint.get_amount();
-    self.total_minted += amount;
-    self.increase_user_overall_balance(mint.get_brc20_tx().get_owner(), amount);
+    let owner = mint.get_brc20_tx().get_owner();
+    // add mint to UserBalance
+    if let Some(balance) = self.balances.get_mut(&owner) {
+      balance.add_mint_tx(mint.clone());
+    } else {
+      let mut user_balance = UserBalance::new();
+      user_balance.add_mint_tx(mint.clone());
+      self.balances.insert(owner.clone(), user_balance);
+    }
     self.mints.push(mint);
   }
+
+  // pub fn add_mint(&mut self, mint: Brc20MintTx) {
+  //   let amount = mint.get_amount();
+  //   self.total_minted += amount;
+  //   self.increase_user_overall_balance(mint.get_brc20_tx().get_owner(), amount);
+  //   self.mints.push(mint);
+  // }
 
   pub fn add_transfer(&mut self, transfer: Brc20TransferTx) {
     self.transfers.push(transfer);
   }
 
-  pub fn increase_user_overall_balance(&mut self, address: &Address, amount: f64) {
-    if let Some(balance) = self.balances.get_mut(address) {
-      balance.increase_overall_balance(amount);
-    } else {
-      let user_balance = UserBalance::new(amount);
-      self.balances.insert(address.clone(), user_balance);
-    }
-  }
+  // pub fn increase_user_overall_balance(&mut self, address: &Address, amount: f64) {
+  //   if let Some(balance) = self.balances.get_mut(address) {
+  //     balance.increase_overall_balance(amount);
+  //   } else {
+  //     let user_balance = UserBalance::new(amount);
+  //     self.balances.insert(address.clone(), user_balance);
+  //   }
+  // }
 
   pub fn get_user_balance(&self, address: &Address) -> Option<UserBalance> {
     self.balances.get(address).cloned()
   }
 
-  pub fn get_total_minted(&self) -> f64 {
+  pub fn get_total_supply(&self) -> f64 {
     self.total_minted
   }
 
-  pub fn get_mints(&self) -> &[Brc20MintTx] {
+  // get total_minted from mints
+  pub fn get_total_minted_from_mint_txs(&self) -> f64 {
+    self.mints.iter().map(|mint| mint.get_amount()).sum()
+  }
+
+  pub fn get_mint_txs(&self) -> &[Brc20MintTx] {
     &self.mints
   }
 
-  pub fn get_transfers(&self) -> &[Brc20TransferTx] {
+  pub fn get_transfer_txs(&self) -> &[Brc20TransferTx] {
     &self.transfers
   }
 

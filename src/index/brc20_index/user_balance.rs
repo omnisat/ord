@@ -6,19 +6,15 @@ use super::{mint::Brc20MintTx, Brc20TransferTx};
 
 #[derive(Debug, Clone)]
 pub struct UserBalance {
-  overall_balance: f64,
   active_transfer_inscriptions: HashMap<OutPoint, Brc20TransferTx>,
   transfer_sends: Vec<Brc20TransferTx>,
   transfer_receives: Vec<Brc20TransferTx>,
   mints: Vec<Brc20MintTx>,
 }
 
-impl UserBalance {}
-
 impl UserBalance {
-  pub fn new(overall_balance: f64) -> Self {
+  pub fn new() -> Self {
     UserBalance {
-      overall_balance,
       active_transfer_inscriptions: HashMap::new(),
       transfer_sends: Vec::new(),
       transfer_receives: Vec::new(),
@@ -34,26 +30,6 @@ impl UserBalance {
       .sum()
   }
 
-  pub fn get_available_balance(&self) -> f64 {
-    self.overall_balance - self.get_transferable_balance()
-  }
-
-  pub fn get_overall_balance(&self) -> f64 {
-    self.overall_balance
-  }
-
-  pub fn increase_overall_balance(&mut self, amount: f64) {
-    self.overall_balance += amount;
-  }
-
-  pub fn decrease_overall_balance(&mut self, amount: f64) -> Result<(), String> {
-    if self.overall_balance >= amount {
-      self.overall_balance -= amount;
-      Ok(())
-    } else {
-      Err("Decrease amount exceeds overall balance".to_string())
-    }
-  }
   pub fn add_transfer_inscription(&mut self, transfer_inscription: Brc20TransferTx) {
     self.active_transfer_inscriptions.insert(
       transfer_inscription.get_inscription_outpoint(),
@@ -82,29 +58,23 @@ impl UserBalance {
     &self.active_transfer_inscriptions
   }
 
-  // pub fn get_transfer_sends(&self) -> &Vec<Brc20TransferTx> {
-  //   &self.transfer_sends
-  // }
-
-  // pub fn get_transfer_receives(&self) -> &Vec<Brc20TransferTx> {
-  //   &self.transfer_receives
-  // }
-
-  pub fn add_transfer_send(&mut self, transfer_send: Brc20TransferTx) {
-    self
-      .decrease_overall_balance(transfer_send.get_amount())
-      .unwrap();
-
-    self.transfer_sends.push(transfer_send);
+  // get total amount of mints
+  pub fn get_total_amount_from_mints(&self) -> f64 {
+    self.mints.iter().map(|mint| mint.get_amount()).sum::<f64>()
   }
 
-  pub fn add_transfer_receive(&mut self, transfer_receive: Brc20TransferTx) {
-    self.increase_overall_balance(transfer_receive.get_amount());
-
-    self.transfer_receives.push(transfer_receive);
+  // get overall balance using transfer sends, transfer receives and mints
+  pub fn get_overall_balance(&self) -> f64 {
+    self.get_total_amount_from_transfer_receives() - self.get_total_amount_from_transfer_sends()
+      + self.get_total_amount_from_mints()
   }
 
-  // get total amount of transfer sends
+  // get available balance using get_overall_balance_from_txs and active transfer inscriptions
+  pub fn get_available_balance(&self) -> f64 {
+    self.get_overall_balance() - self.get_transferable_balance()
+  }
+
+  // get total amount from transfer sends
   pub fn get_total_amount_from_transfer_sends(&self) -> f64 {
     self
       .transfer_sends
@@ -113,7 +83,7 @@ impl UserBalance {
       .sum()
   }
 
-  // get total amount of transfer receives
+  // get total amount from transfer receives
   pub fn get_total_amount_from_transfer_receives(&self) -> f64 {
     self
       .transfer_receives
@@ -122,28 +92,52 @@ impl UserBalance {
       .sum()
   }
 
-  // get total amount of mints
-  pub fn get_total_amount_from_mints(&self) -> f64 {
-    self.mints.iter().map(|mint| mint.get_amount()).sum::<f64>()
-  }
+  //------------------------------------------------//
+  // IMPLEMENT THESE ONCE INDEXING SEND AND RECEIVE TXS IS IMPLEMENTED
+  // pub fn get_transfer_sends(&self) -> &Vec<Brc20TransferTx> {
+  //   &self.transfer_sends
+  // }
 
-  // get overall balance using transfer sends, transfer receives and mints
-  pub fn get_overall_balance_from_txs(&self) -> f64 {
-    self.get_total_amount_from_transfer_receives() - self.get_total_amount_from_transfer_sends()
-      + self.get_total_amount_from_mints()
-  }
+  // pub fn get_transfer_receives(&self) -> &Vec<Brc20TransferTx> {
+  //   &self.transfer_receives
+  // }
 
-  // get available balance using get_overall_balance_from_txs and active transfer inscriptions
-  pub fn get_available_balance_from_txs(&self) -> f64 {
-    self.get_overall_balance_from_txs() - self.get_transferable_balance()
-  }
+  // pub fn add_transfer_send(&mut self, transfer_send: Brc20TransferTx) {
+  //   self.transfer_sends.push(transfer_send);
+  // }
 
-  // get available balance using get_overall_balance_from_txs and get_transferable_balance
+  // pub fn add_transfer_receive(&mut self, transfer_receive: Brc20TransferTx) {
+  //   self.transfer_receives.push(transfer_receive);
+  // }
+
+  //-----------------------------//
+  // MAY NOT NEED THESE FUNCTIONS
+  // pub fn get_available_balance(&self) -> f64 {
+  //   self.overall_balance - self.get_transferable_balance()
+  // }
+
+  // pub fn get_overall_balance(&self) -> f64 {
+  //   self.overall_balance
+  // }
+
+  // pub fn increase_overall_balance(&mut self, amount: f64) {
+  //   self.overall_balance += amount;
+  // }
+
+  // pub fn decrease_overall_balance(&mut self, amount: f64) -> Result<(), String> {
+  //   if self.overall_balance >= amount {
+  //     self.overall_balance -= amount;
+  //     Ok(())
+  //   } else {
+  //     Err("Decrease amount exceeds overall balance".to_string())
+  //   }
+  // }
+  //-----------------------------//
 }
 
 impl fmt::Display for UserBalance {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    writeln!(f, "Overall Balance: {}", self.overall_balance)?;
+    writeln!(f, "Overall Balance: {}", self.get_overall_balance())?;
     writeln!(f, "Active Transfer Inscriptions:")?;
     for (outpoint, transfer_tx) in &self.active_transfer_inscriptions {
       writeln!(f, "OutPoint: {}\n{}", outpoint, transfer_tx)?;

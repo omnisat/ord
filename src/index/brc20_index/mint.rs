@@ -66,7 +66,7 @@ impl Brc20Mint {
     if let Some(ticker) = ticker_map.get(&brc20_mint_tx.mint.tick) {
       let limit = ticker.get_limit();
       let max_supply = ticker.get_max_supply();
-      let total_minted = ticker.get_total_minted();
+      let total_minted = ticker.get_total_supply();
       let amount = convert_to_float(&brc20_mint_tx.mint.amt, ticker.get_decimals());
       match amount {
         Ok(amount) => {
