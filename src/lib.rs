@@ -150,7 +150,7 @@ fn unbound_outpoint() -> OutPoint {
 
 pub fn main() {
   env_logger::init();
-
+  println!(" MAIN");
   ctrlc::set_handler(move || {
     LISTENERS
       .lock()

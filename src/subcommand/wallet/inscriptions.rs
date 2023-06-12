@@ -8,6 +8,7 @@ pub struct Output {
 }
 
 pub(crate) fn run(options: Options) -> Result {
+  println!(" options from inscriptions.rs");
   let index = Index::open(&options)?;
   index.update()?;
 

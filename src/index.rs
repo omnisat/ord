@@ -18,6 +18,7 @@ use {
   std::sync::atomic::{self, AtomicBool},
 };
 
+mod brc20_index;
 mod entry;
 mod fetcher;
 mod rtx;
@@ -102,7 +103,7 @@ pub(crate) struct Info {
   pub(crate) utxos_indexed: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub(crate) struct TransactionInfo {
   pub(crate) starting_block_count: u64,
   pub(crate) starting_timestamp: u128,
@@ -247,6 +248,8 @@ impl Index {
           (outpoint, amount)
         }),
     );
+
+    println!("utxos: {:?}", utxos);
 
     #[derive(Deserialize)]
     pub(crate) struct JsonOutPoint {
